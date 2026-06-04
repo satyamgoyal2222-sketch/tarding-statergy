@@ -1,15 +1,21 @@
 //@version=6
-indicator("Daily Signal Strategy - BTCUSD v2", overlay=true)
+indicator("Daily Signal Strategy - BTCUSD v3 with Backtesting", overlay=true)
 
 // ====================================================================
-// PROFESSIONAL TRADING STRATEGY WITH PROPER TRADE MANAGEMENT
+// PROFESSIONAL TRADING STRATEGY WITH BACKTESTING
+// Entry = Daily Close +/- 250 (FIXED - NOT ADJUSTABLE)
 // ====================================================================
 
 // INPUTS
-entryOffset = input.float(250, "Entry Offset Points", group="Settings")
 targetPoints = input.float(2500, "Target Profit Points", group="Settings")
 stopLossPoints = input.float(250, "Stop Loss Points", group="Settings")
+breakEvenThreshold = input.float(2000, "Break Even Threshold Points", group="Settings")
 showLabels = input.bool(true, "Show Entry Levels", group="Display")
+backtestStart = input(timestamp("2024-01-01"), "Backtest Start Date", group="Backtest")
+backtestEnd = input(timestamp("2026-12-31"), "Backtest End Date", group="Backtest")
+
+// FIXED ENTRY OFFSET (NOT ADJUSTABLE)
+const float ENTRY_OFFSET = 250
 
 // GET DAILY DATA
 dailyClose = request.security(syminfo.tickerid, "D", close)
@@ -19,27 +25,44 @@ dailyOpen = request.security(syminfo.tickerid, "D", open)
 isBullish = dailyClose > dailyOpen  // Green candle
 isBearish = dailyClose < dailyOpen  // Red candle
 
-// CALCULATE ENTRY LEVEL
-entryLevel = isBullish ? dailyClose + entryOffset : dailyClose - entryOffset
+// CALCULATE ENTRY LEVEL (FIXED FORMULA - NOT ADJUSTABLE)
+entryLevel = isBullish ? dailyClose + ENTRY_OFFSET : dailyClose - ENTRY_OFFSET
 
 // ====================================================================
-// TRADE STATE MANAGEMENT - LOCKED ENTRY PRICE (NO RE-ENTRY AT SAME PRICE)
+// BACKTEST DATE FILTER
 // ====================================================================
 
-var bool tradeActive = false           // Is there an active trade?
-var string tradeType = na              // "BUY" or "SELL"
-var float tradeEntryPrice = na         // Entry price of current trade (LOCKED - won't re-enter at this price)
-var float tradeTargetPrice = na        // Target price for current trade
-var float tradeStopLossPrice = na      // Stop loss price for current trade
-var int tradeBarIndex = na             // Bar index when trade started
+inBacktestPeriod = time >= backtestStart and time <= backtestEnd
+
+// ====================================================================
+// TRADE STATE MANAGEMENT
+// ====================================================================
+
+var bool tradeActive = false
+var string tradeType = na
+var float tradeEntryPrice = na
+var float tradeTargetPrice = na
+var float tradeStopLossPrice = na
+var float tradeCurrentProfit = 0.0
+var int tradeBarIndex = na
+
+// BACKTESTING VARIABLES
+var int totalTrades = 0
+var int winningTrades = 0
+var int losingTrades = 0
+var float totalProfit = 0.0
+var float maxProfit = 0.0
+var float maxLoss = 0.0
+var float largestWin = 0.0
+var float largestLoss = 0.0
+var array<float> tradeResults = array.new<float>()
 
 // ====================================================================
 // TRADE LOGIC - ENTRY ONLY WHEN NO ACTIVE TRADE
 // ====================================================================
 
-// Check if price reached entry level (and NO active trade exists)
-shouldEnterBuy = isBullish and close >= entryLevel and close[1] < entryLevel and not tradeActive
-shouldEnterSell = isBearish and close <= entryLevel and close[1] > entryLevel and not tradeActive
+shouldEnterBuy = isBullish and close >= entryLevel and close[1] < entryLevel and not tradeActive and inBacktestPeriod
+shouldEnterSell = isBearish and close <= entryLevel and close[1] > entryLevel and not tradeActive and inBacktestPeriod
 
 // BUY TRADE ENTRY
 if shouldEnterBuy
@@ -49,6 +72,7 @@ if shouldEnterBuy
     tradeTargetPrice := entryLevel + targetPoints
     tradeStopLossPrice := entryLevel - stopLossPoints
     tradeBarIndex := bar_index
+    tradeCurrentProfit := 0.0
     alert("🟢 BUY SIGNAL TRIGGERED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nTarget: " + str.tostring(tradeTargetPrice, format.price) + "\nStop Loss: " + str.tostring(tradeStopLossPrice, format.price))
 
 // SELL TRADE ENTRY
@@ -59,37 +83,78 @@ if shouldEnterSell
     tradeTargetPrice := entryLevel - targetPoints
     tradeStopLossPrice := entryLevel + stopLossPoints
     tradeBarIndex := bar_index
+    tradeCurrentProfit := 0.0
     alert("🔴 SELL SIGNAL TRIGGERED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nTarget: " + str.tostring(tradeTargetPrice, format.price) + "\nStop Loss: " + str.tostring(tradeStopLossPrice, format.price))
 
 // ====================================================================
+// TRACK CURRENT PROFIT/LOSS
+// ====================================================================
+
+if tradeActive
+    if tradeType == "BUY"
+        tradeCurrentProfit := close - tradeEntryPrice
+    else if tradeType == "SELL"
+        tradeCurrentProfit := tradeEntryPrice - close
+
+// ====================================================================
 // CHECK FOR TARGET HIT (Trade Completed - Full Profit)
-// AFTER THIS: NEXT TRADE CAN ONLY START WHEN NEW CONDITIONS MET
 // ====================================================================
 
 if tradeActive and tradeType == "BUY" and close >= tradeTargetPrice
-    alert("✅ TARGET HIT - BUY TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(targetPoints, format.price) + " points")
+    profitPoints = targetPoints
+    totalProfit += profitPoints
+    winningTrades += 1
+    totalTrades += 1
+    array.push(tradeResults, profitPoints)
+    maxProfit := math.max(maxProfit, profitPoints)
+    largestWin := math.max(largestWin, profitPoints)
+    
+    alert("✅ TARGET HIT - BUY TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(profitPoints, format.price) + " points")
     tradeActive := false
     tradeType := na
     tradeEntryPrice := na
 
 if tradeActive and tradeType == "SELL" and close <= tradeTargetPrice
-    alert("✅ TARGET HIT - SELL TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(targetPoints, format.price) + " points")
+    profitPoints = targetPoints
+    totalProfit += profitPoints
+    winningTrades += 1
+    totalTrades += 1
+    array.push(tradeResults, profitPoints)
+    maxProfit := math.max(maxProfit, profitPoints)
+    largestWin := math.max(largestWin, profitPoints)
+    
+    alert("✅ TARGET HIT - SELL TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(profitPoints, format.price) + " points")
     tradeActive := false
     tradeType := na
     tradeEntryPrice := na
 
 // ====================================================================
 // CHECK FOR STOP LOSS HIT (Trade Completed - Loss)
-// AFTER THIS: NEXT TRADE CAN ONLY START WHEN NEW CONDITIONS MET
 // ====================================================================
 
 if tradeActive and tradeType == "BUY" and close <= tradeStopLossPrice
+    lossPoints = -stopLossPoints
+    totalProfit += lossPoints
+    losingTrades += 1
+    totalTrades += 1
+    array.push(tradeResults, lossPoints)
+    maxLoss := math.min(maxLoss, lossPoints)
+    largestLoss := math.min(largestLoss, lossPoints)
+    
     alert("❌ STOP LOSS HIT - BUY TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nLoss: " + str.tostring(stopLossPoints, format.price) + " points")
     tradeActive := false
     tradeType := na
     tradeEntryPrice := na
 
 if tradeActive and tradeType == "SELL" and close >= tradeStopLossPrice
+    lossPoints = -stopLossPoints
+    totalProfit += lossPoints
+    losingTrades += 1
+    totalTrades += 1
+    array.push(tradeResults, lossPoints)
+    maxLoss := math.min(maxLoss, lossPoints)
+    largestLoss := math.min(largestLoss, lossPoints)
+    
     alert("❌ STOP LOSS HIT - SELL TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nLoss: " + str.tostring(stopLossPoints, format.price) + " points")
     tradeActive := false
     tradeType := na
@@ -102,9 +167,7 @@ if tradeActive and tradeType == "SELL" and close >= tradeStopLossPrice
 var bool breakEvenSet = false
 
 if tradeActive and not breakEvenSet
-    profitNow = tradeType == "BUY" ? close - tradeEntryPrice : tradeEntryPrice - close
-    
-    if profitNow >= 2000
+    if tradeCurrentProfit >= breakEvenThreshold
         breakEvenSet := true
         tradeStopLossPrice := tradeEntryPrice
         alert("⚠️ BREAK EVEN SET\nStop Loss moved to Entry: " + str.tostring(tradeEntryPrice, format.price))
@@ -155,41 +218,90 @@ plot(tradeActive ? tradeTargetPrice : na, "Target", color.green, 2)
 plot(tradeActive ? tradeStopLossPrice : na, "Stop Loss", color.red, 2)
 
 // ====================================================================
-// INFO TABLE
+// CURRENT TRADE INFO TABLE
 // ====================================================================
 
 if barstate.islast
     candleColor = isBullish ? "GREEN 🟢" : "RED 🔴"
+    nextEntryLevel = isBullish ? dailyClose + ENTRY_OFFSET : dailyClose - ENTRY_OFFSET
     
-    t = table.new(position.top_right, 2, 7, border_color=color.gray, border_width=1)
+    t = table.new(position.top_right, 2, 8, border_color=color.gray, border_width=1)
     
     // Daily Candle
     table.cell(t, 0, 0, "Daily Candle", bgcolor=color.navy, text_color=color.white, text_size=size.small)
     table.cell(t, 1, 0, candleColor, bgcolor=isBullish ? color.new(color.green, 50) : color.new(color.red, 50), text_color=color.white, text_size=size.small)
     
+    // Daily Close Price
+    table.cell(t, 0, 1, "Daily Close", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 1, str.tostring(dailyClose, format.price), bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.small)
+    
+    // Next Entry Level
+    table.cell(t, 0, 2, "Next Entry Level", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 2, str.tostring(nextEntryLevel, format.price), bgcolor=color.new(color.orange, 50), text_color=color.white, text_size=size.small)
+    
     // Current Price
-    table.cell(t, 0, 1, "Current Price", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 1, str.tostring(close, format.price), bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 3, "Current Price", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 3, str.tostring(close, format.price), bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.small)
     
     // Trade Status
     tradeStatus = tradeActive ? (tradeType == "BUY" ? "🟢 BUY ACTIVE" : "🔴 SELL ACTIVE") : "⚪ NO TRADE"
     tradeStatusColor = tradeActive ? (tradeType == "BUY" ? color.new(color.green, 50) : color.new(color.red, 50)) : color.new(color.gray, 50)
-    table.cell(t, 0, 2, "Trade Status", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 2, tradeStatus, bgcolor=tradeStatusColor, text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 4, "Trade Status", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 4, tradeStatus, bgcolor=tradeStatusColor, text_color=color.white, text_size=size.small)
+    
+    // Current P/L
+    currentPLText = tradeActive ? str.tostring(tradeCurrentProfit, format.price) : "-"
+    currentPLColor = tradeActive ? (tradeCurrentProfit >= 0 ? color.new(color.green, 50) : color.new(color.red, 50)) : color.new(color.gray, 50)
+    table.cell(t, 0, 5, "Current P/L", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 5, currentPLText, bgcolor=currentPLColor, text_color=color.white, text_size=size.small)
     
     // Entry Price (if active)
-    table.cell(t, 0, 3, "Entry Price (LOCKED)", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 3, tradeActive ? str.tostring(tradeEntryPrice, format.price) : "-", bgcolor=color.new(color.yellow, 50), text_color=color.white, text_size=size.small)
+    table.cell(t, 0, 6, "Entry Price (LOCKED)", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 6, tradeActive ? str.tostring(tradeEntryPrice, format.price) : "-", bgcolor=color.new(color.yellow, 50), text_color=color.white, text_size=size.small)
     
-    // Target Price (if active)
-    table.cell(t, 0, 4, "Target Price (+2500)", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 4, tradeActive ? str.tostring(tradeTargetPrice, format.price) : "-", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.small)
+    // Target & SL Row
+    table.cell(t, 0, 7, "Target | Stop Loss", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    targetSLText = tradeActive ? str.tostring(tradeTargetPrice, format.price) + " | " + str.tostring(tradeStopLossPrice, format.price) : "-"
+    table.cell(t, 1, 7, targetSLText, bgcolor=color.new(color.blue, 50), text_color=color.white, text_size=size.small)
+
+// ====================================================================
+// BACKTEST RESULTS TABLE (Only on last bar)
+// ====================================================================
+
+if barstate.islast and inBacktestPeriod
+    winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0
+    avgProfit = totalTrades > 0 ? totalProfit / totalTrades : 0
     
-    // Stop Loss Price (if active)
-    table.cell(t, 0, 5, "Stop Loss (-250)", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 5, tradeActive ? str.tostring(tradeStopLossPrice, format.price) : "-", bgcolor=color.new(color.red, 50), text_color=color.white, text_size=size.small)
+    bt = table.new(position.bottom_right, 2, 10, border_color=color.white, border_width=2)
     
-    // Break Even Status
-    beStatus = tradeActive and breakEvenSet ? "✅ ACTIVE" : (tradeActive ? "⏳ WAITING 2000pts" : "-")
-    table.cell(t, 0, 6, "Break Even Status", bgcolor=color.navy, text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 6, beStatus, bgcolor=color.new(color.orange, 50), text_color=color.white, text_size=size.small)
+    table.cell(bt, 0, 0, "BACKTEST RESULTS", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 0, "📊", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 1, "Total Trades", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 1, str.tostring(totalTrades), bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 2, "Winning Trades", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 2, str.tostring(winningTrades), bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 3, "Losing Trades", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 3, str.tostring(losingTrades), bgcolor=color.new(color.red, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 4, "Win Rate %", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 4, str.tostring(winRate, "0.00") + "%", bgcolor=color.new(color.purple, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 5, "Total Profit/Loss", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    totalPLColor = totalProfit >= 0 ? color.new(color.green, 50) : color.new(color.red, 50)
+    table.cell(bt, 1, 5, str.tostring(totalProfit, "0.00"), bgcolor=totalPLColor, text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 6, "Avg Profit/Trade", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    avgPLColor = avgProfit >= 0 ? color.new(color.green, 50) : color.new(color.red, 50)
+    table.cell(bt, 1, 6, str.tostring(avgProfit, "0.00"), bgcolor=avgPLColor, text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 7, "Largest Win", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 7, str.tostring(largestWin, "0.00") + " pts", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 8, "Largest Loss", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 8, str.tostring(largestLoss, "0.00") + " pts", bgcolor=color.new(color.red, 50), text_color=color.white, text_size=size.small)
+    
+    table.cell(bt, 0, 9, "Max Profit Reached", bgcolor=color.gray, text_color=color.white, text_size=size.small)
+    table.cell(bt, 1, 9, str.tostring(maxProfit, "0.00") + " pts", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.small)
