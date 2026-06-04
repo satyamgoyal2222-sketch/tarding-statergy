@@ -1,0 +1,189 @@
+//@version=6
+indicator("Daily Signal Strategy - BTCUSD v2", overlay=true)
+
+// ====================================================================
+// PROFESSIONAL TRADING STRATEGY WITH PROPER TRADE MANAGEMENT
+// ====================================================================
+
+// INPUTS
+entryOffset = input.float(250, "Entry Offset Points", group="Settings")
+targetPoints = input.float(2500, "Target Profit Points", group="Settings")
+stopLossPoints = input.float(500, "Stop Loss Points", group="Settings")
+showLabels = input.bool(true, "Show Entry Levels", group="Display")
+
+// GET DAILY DATA
+dailyClose = request.security(syminfo.tickerid, "D", close)
+dailyOpen = request.security(syminfo.tickerid, "D", open)
+
+// DETERMINE CANDLE COLOR
+isBullish = dailyClose > dailyOpen  // Green candle
+isBearish = dailyClose < dailyOpen  // Red candle
+
+// CALCULATE ENTRY LEVEL
+entryLevel = isBullish ? dailyClose + entryOffset : dailyClose - entryOffset
+
+// ====================================================================
+// TRADE STATE MANAGEMENT
+// ====================================================================
+
+var bool tradeActive = false           // Is there an active trade?
+var string tradeType = na              // "BUY" or "SELL"
+var float tradeEntryPrice = na         // Entry price of current trade
+var float tradeTargetPrice = na        // Target price for current trade
+var float tradeStopLossPrice = na      // Stop loss price for current trade
+var float tradeEntryLevel = na         // Entry level that triggered the trade (to prevent re-entry at same level)
+var int tradeBarIndex = na             // Bar index when trade started
+
+// ====================================================================
+// TRADE LOGIC
+// ====================================================================
+
+// Check if price reached entry level (and NO active trade exists)
+shouldEnterBuy = isBullish and close >= entryLevel and close[1] < entryLevel and not tradeActive
+shouldEnterSell = isBearish and close <= entryLevel and close[1] > entryLevel and not tradeActive
+
+// BUY TRADE ENTRY
+if shouldEnterBuy
+    tradeActive := true
+    tradeType := "BUY"
+    tradeEntryPrice := entryLevel
+    tradeTargetPrice := entryLevel + targetPoints
+    tradeStopLossPrice := entryLevel - stopLossPoints
+    tradeEntryLevel := entryLevel
+    tradeBarIndex := bar_index
+    alert("🟢 BUY SIGNAL TRIGGERED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nTarget: " + str.tostring(tradeTargetPrice, format.price) + "\nStop Loss: " + str.tostring(tradeStopLossPrice, format.price))
+
+// SELL TRADE ENTRY
+if shouldEnterSell
+    tradeActive := true
+    tradeType := "SELL"
+    tradeEntryPrice := entryLevel
+    tradeTargetPrice := entryLevel - targetPoints
+    tradeStopLossPrice := entryLevel + stopLossPoints
+    tradeEntryLevel := entryLevel
+    tradeBarIndex := bar_index
+    alert("🔴 SELL SIGNAL TRIGGERED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nTarget: " + str.tostring(tradeTargetPrice, format.price) + "\nStop Loss: " + str.tostring(tradeStopLossPrice, format.price))
+
+// ====================================================================
+// CHECK FOR TARGET HIT (Trade Completed - Full Profit)
+// ====================================================================
+
+if tradeActive and tradeType == "BUY" and close >= tradeTargetPrice
+    alert("✅ TARGET HIT - BUY TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(targetPoints, format.price) + " points")
+    tradeActive := false
+    tradeType := na
+
+if tradeActive and tradeType == "SELL" and close <= tradeTargetPrice
+    alert("✅ TARGET HIT - SELL TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nProfit: " + str.tostring(targetPoints, format.price) + " points")
+    tradeActive := false
+    tradeType := na
+
+// ====================================================================
+// CHECK FOR STOP LOSS HIT (Trade Completed - Loss)
+// ====================================================================
+
+if tradeActive and tradeType == "BUY" and close <= tradeStopLossPrice
+    alert("❌ STOP LOSS HIT - BUY TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nLoss: " + str.tostring(stopLossPoints, format.price) + " points")
+    tradeActive := false
+    tradeType := na
+
+if tradeActive and tradeType == "SELL" and close >= tradeStopLossPrice
+    alert("❌ STOP LOSS HIT - SELL TRADE CLOSED\nEntry: " + str.tostring(tradeEntryPrice, format.price) + "\nExit: " + str.tostring(close, format.price) + "\nLoss: " + str.tostring(stopLossPoints, format.price) + " points")
+    tradeActive := false
+    tradeType := na
+
+// ====================================================================
+// CHECK FOR BREAKEVEN (2000 points profit = Move SL to Entry)
+// ====================================================================
+
+var bool breakEvenSet = false
+
+if tradeActive and not breakEvenSet
+    profitNow = tradeType == "BUY" ? close - tradeEntryPrice : tradeEntryPrice - close
+    
+    if profitNow >= 2000
+        breakEvenSet := true
+        tradeStopLossPrice := tradeEntryPrice
+        alert("⚠️ BREAK EVEN SET\nStop Loss moved to Entry: " + str.tostring(tradeEntryPrice, format.price))
+
+// Reset breakEvenSet when trade closes
+if not tradeActive
+    breakEvenSet := false
+
+// ====================================================================
+// DISPLAY ENTRY LEVEL LINE
+// ====================================================================
+
+if showLabels
+    // Entry Level Line (only if no active trade or same entry level)
+    if not tradeActive or na(tradeEntryLevel)
+        line.new(bar_index - 50, entryLevel, bar_index + 50, entryLevel,
+            color=isBullish ? color.new(color.green, 40) : color.new(color.red, 40),
+            width=2, style=line.style_dashed, extend=extend.right)
+        
+        labelText = isBullish ? "🟢 BUY: " + str.tostring(entryLevel, format.price) : 
+                               "🔴 SELL: " + str.tostring(entryLevel, format.price)
+        
+        label.new(bar_index - 55, entryLevel, labelText,
+            color=isBullish ? color.new(color.green, 0) : color.new(color.red, 0),
+            textcolor=color.white, style=label.style_label_right, size=size.small)
+
+// ====================================================================
+// DISPLAY ACTIVE TRADE LEVELS
+// ====================================================================
+
+if tradeActive
+    // Entry Line
+    line.new(bar_index - 20, tradeEntryPrice, bar_index + 100, tradeEntryPrice,
+        color=color.new(color.yellow, 20), width=3, style=line.style_solid, extend=extend.right)
+    
+    // Target Line
+    line.new(bar_index - 20, tradeTargetPrice, bar_index + 100, tradeTargetPrice,
+        color=color.new(color.green, 20), width=2, style=line.style_dotted, extend=extend.right)
+    
+    // Stop Loss Line
+    line.new(bar_index - 20, tradeStopLossPrice, bar_index + 100, tradeStopLossPrice,
+        color=color.new(color.red, 20), width=2, style=line.style_dotted, extend=extend.right)
+
+// ====================================================================
+// PLOT LINES
+// ====================================================================
+
+plot(tradeActive ? tradeEntryPrice : na, "Active Entry", color.yellow, 3)
+plot(tradeActive ? tradeTargetPrice : na, "Target", color.green, 2)
+plot(tradeActive ? tradeStopLossPrice : na, "Stop Loss", color.red, 2)
+
+// ====================================================================
+// INFO TABLE
+// ====================================================================
+
+if barstate.islast
+    candleColor = isBullish ? "GREEN 🟢" : "RED 🔴"
+    
+    t = table.new(position.top_right, 2, 6, border_color=color.gray, border_width=1)
+    
+    // Daily Candle
+    table.cell(t, 0, 0, "Daily Candle", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 0, candleColor, bgcolor=isBullish ? color.new(color.green, 50) : color.new(color.red, 50), text_color=color.white, text_size=size.small)
+    
+    // Current Price
+    table.cell(t, 0, 1, "Current Price", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 1, str.tostring(close, format.price), bgcolor=color.new(color.gray, 50), text_color=color.white, text_size=size.small)
+    
+    // Trade Status
+    tradeStatus = tradeActive ? (tradeType == "BUY" ? "🟢 BUY ACTIVE" : "🔴 SELL ACTIVE") : "⚪ NO TRADE"
+    tradeStatusColor = tradeActive ? (tradeType == "BUY" ? color.new(color.green, 50) : color.new(color.red, 50)) : color.new(color.gray, 50)
+    table.cell(t, 0, 2, "Trade Status", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 2, tradeStatus, bgcolor=tradeStatusColor, text_color=color.white, text_size=size.small)
+    
+    // Entry Price (if active)
+    table.cell(t, 0, 3, "Entry Price", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 3, tradeActive ? str.tostring(tradeEntryPrice, format.price) : "-", bgcolor=color.new(color.blue, 50), text_color=color.white, text_size=size.small)
+    
+    // Target Price (if active)
+    table.cell(t, 0, 4, "Target Price", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 4, tradeActive ? str.tostring(tradeTargetPrice, format.price) : "-", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.small)
+    
+    // Stop Loss Price (if active)
+    table.cell(t, 0, 5, "Stop Loss", bgcolor=color.navy, text_color=color.white, text_size=size.small)
+    table.cell(t, 1, 5, tradeActive ? str.tostring(tradeStopLossPrice, format.price) : "-", bgcolor=color.new(color.red, 50), text_color=color.white, text_size=size.small)
